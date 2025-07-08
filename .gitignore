@@ -210,3 +210,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 data/
+mktcap_cache_meta.json
+mktcap_cache.csv
