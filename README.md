@@ -87,7 +87,7 @@ pip install --upgrade cffi
 
 ### Mootdx 运行前置步骤
 
-**注意，Mootdx 下载的数据是未复权数据，会使选股结果存在偏差，请尽量使用 Tushare**
+**注意：Mootdx 日线数据现在支持前复权，其他频率仍为未复权数据。可转为使用 Tushare 数据源**
 使用 **Mootdx** 数据源前，需先探测最快行情服务器一次：
 
 ```bash
