@@ -40,6 +40,32 @@ for noisy in ("httpx", "urllib3", "_client", "akshare"):
 
 def _get_mktcap_ak() -> pd.DataFrame:
     """实时快照，返回列：code, mktcap（单位：元）"""
+    cache_file = Path("mktcap_cache.csv")
+    cache_meta_file = Path("mktcap_cache_meta.json")
+    
+    # 检查缓存是否存在且是当天的
+    if cache_file.exists() and cache_meta_file.exists():
+        try:
+            # 读取缓存元数据
+            with open(cache_meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            
+            cache_date = pd.to_datetime(meta.get("cache_date"))
+            today = pd.Timestamp.today().normalize()
+            
+            # 如果是当天的缓存，直接使用
+            if cache_date.date() == today.date():
+                logger.info("使用本地缓存的市值数据 (缓存时间: %s)", cache_date.strftime("%Y-%m-%d"))
+                df = pd.read_csv(cache_file, dtype={"code": str})
+                df["mktcap"] = pd.to_numeric(df["mktcap"], errors="coerce")
+                return df
+            else:
+                logger.info("缓存已过期 (缓存时间: %s)，重新获取", cache_date.strftime("%Y-%m-%d"))
+        except Exception as e:
+            logger.warning("读取缓存失败: %s，重新获取", e)
+    
+    # 从网络获取数据
+    logger.info("从网络获取市值数据...")
     for attempt in range(1, 4):
         try:
             df = ak.stock_zh_a_spot_em()
@@ -52,6 +78,22 @@ def _get_mktcap_ak() -> pd.DataFrame:
 
     df = df[["代码", "总市值"]].rename(columns={"代码": "code", "总市值": "mktcap"})
     df["mktcap"] = pd.to_numeric(df["mktcap"], errors="coerce")
+    
+    # 保存到缓存
+    try:
+        # 确保code字段是字符串格式
+        df["code"] = df["code"].astype(str)
+        df.to_csv(cache_file, index=False)
+        meta = {
+            "cache_date": pd.Timestamp.today().strftime("%Y-%m-%d %H:%M:%S"),
+            "record_count": len(df)
+        }
+        with open(cache_meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        logger.info("市值数据已缓存到本地 (记录数: %d)", len(df))
+    except Exception as e:
+        logger.warning("保存缓存失败: %s", e)
+    
     return df
 
 # --------------------------- 股票池筛选 --------------------------- #
