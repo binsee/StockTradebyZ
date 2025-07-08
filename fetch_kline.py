@@ -8,6 +8,7 @@ import random
 import sys
 import time
 import warnings
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
@@ -224,12 +225,66 @@ def _get_kline_akshare(code: str, start: str, end: str, adjust: str) -> pd.DataF
 
 def _get_kline_mootdx(code: str, start: str, end: str, adjust: str, freq_code: int) -> pd.DataFrame:    
     symbol = code.zfill(6)
+    
+    # 只支持日线数据使用前复权
+    if freq_code == 4:  # 日线
+        try:
+            from mootdx.contrib.adjust import get_adjust_year
+            
+            # 解析日期范围
+            start_ts = pd.to_datetime(start, format="%Y%m%d")
+            end_ts = pd.to_datetime(end, format="%Y%m%d")
+            
+            # 获取年份范围
+            start_year = start_ts.year
+            end_year = end_ts.year
+            
+            dfs = []
+            for year in range(start_year, end_year + 1):
+                try:
+                    # 获取前复权数据 (factor='01' 表示前复权)
+                    year_df = get_adjust_year(symbol=symbol, year=str(year), factor='01')
+                    if not year_df.empty:
+                        # 将索引重置为列，因为date是索引而不是列
+                        year_df = year_df.reset_index()
+                        dfs.append(year_df)
+                except Exception as e:
+                    logger.warning("Mootdx 获取 %s %d年数据失败: %s", code, year, e)
+                    logger.warning("错误详情: %s", traceback.format_exc())
+                    continue
+            
+            if not dfs:
+                return pd.DataFrame()
+            
+            # 合并所有年份数据
+            df = pd.concat(dfs, ignore_index=True)
+            df = df.reset_index()
+            
+            df = df.rename(
+                columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "vol": "volume"}
+            ).copy()
+            df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+            start_ts = pd.to_datetime(start, format="%Y%m%d")
+            end_ts = pd.to_datetime(end, format="%Y%m%d")
+            df = df[(df["date"].dt.date >= start_ts.date()) & (df["date"].dt.date <= end_ts.date())].copy()    
+            df = df.sort_values("date").reset_index(drop=True)    
+            return df[["date", "open", "close", "high", "low", "volume"]]
+            
+        except ImportError:
+            logger.warning("无法导入 mootdx.contrib.adjust，回退到原始方法")
+        except Exception as e:
+            logger.warning("Mootdx 前复权数据获取失败，回退到原始方法: %s", e)
+            logger.warning("错误详情: %s", traceback.format_exc())
+            return pd.DataFrame()
+    
+    # 回退到原始方法（未复权数据）
     freq = _FREQ_MAP.get(freq_code, "day")
     client = Quotes.factory(market="std")
     try:
         df = client.bars(symbol=symbol, frequency=freq, adjust=adjust or None)
     except Exception as e:
         logger.warning("Mootdx 拉取 %s 失败: %s", code, e)
+        logger.warning("错误详情: %s", traceback.format_exc())
         return pd.DataFrame()
     if df is None or df.empty:
         return pd.DataFrame()
@@ -321,8 +376,12 @@ def fetch_one(
                 )
             new_df.to_csv(csv_path, index=False)
             break
+        except Exception as e:
+            logger.exception("%s 第 %d 次抓取失败: %s", code, attempt, e)
+            logger.warning("错误详情: %s", traceback.format_exc())
         except Exception:
             logger.exception("%s 第 %d 次抓取失败", code, attempt)
+            return
             time.sleep(random.uniform(1, 3) * attempt)  # 指数退避
     else:
         logger.error("%s 三次抓取均失败，已跳过！", code)
