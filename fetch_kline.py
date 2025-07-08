@@ -12,6 +12,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
+import threading
 
 import akshare as ak
 import pandas as pd
@@ -21,8 +22,10 @@ from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
-# --------------------------- 全局日志配置 --------------------------- #
+# --------------------------- 全局变量 --------------------------- #
 LOG_FILE = Path("fetch.log")
+# 全局错误标志，用于多线程协调
+global_error_flag = threading.Event()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(message)s",
@@ -275,6 +278,8 @@ def _get_kline_mootdx(code: str, start: str, end: str, adjust: str, freq_code: i
         except Exception as e:
             logger.warning("Mootdx 前复权数据获取失败，回退到原始方法: %s", e)
             logger.warning("错误详情: %s", traceback.format_exc())
+            global_error_flag.set()
+            logger.error("设置全局错误标志，所有线程将停止")
             return pd.DataFrame()
     
     # 回退到原始方法（未复权数据）
@@ -379,8 +384,9 @@ def fetch_one(
         except Exception as e:
             logger.exception("%s 第 %d 次抓取失败: %s", code, attempt, e)
             logger.warning("错误详情: %s", traceback.format_exc())
-        except Exception:
-            logger.exception("%s 第 %d 次抓取失败", code, attempt)
+            # 设置全局错误标志，通知其他线程停止
+            global_error_flag.set()
+            logger.error("设置全局错误标志，所有线程将停止")
             return
             time.sleep(random.uniform(1, 3) * attempt)  # 指数退避
     else:
@@ -457,8 +463,36 @@ def main():
             )
             for code in codes
         ]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="下载进度"):
-            pass
+        
+        try:
+            for future in tqdm(as_completed(futures), total=len(futures), desc="下载进度"):
+                # 检查是否有全局错误
+                if global_error_flag.is_set():
+                    logger.error("检测到全局错误标志，正在取消所有任务...")
+                    # 取消所有未完成的任务
+                    for f in futures:
+                        f.cancel()
+                    # 等待所有任务完成
+                    for f in futures:
+                        try:
+                            f.result(timeout=5)
+                        except:
+                            pass
+                    logger.error("所有任务已取消，程序退出")
+                    sys.exit(1)
+                    
+                # 检查当前任务是否出错
+                try:
+                    future.result(timeout=1)
+                except Exception as e:
+                    logger.error("任务执行出错: %s", e)
+                    global_error_flag.set()
+                    break
+        except KeyboardInterrupt:
+            logger.info("用户中断，正在停止所有任务...")
+            for f in futures:
+                f.cancel()
+            sys.exit(1)
 
     logger.info("全部任务完成，数据已保存至 %s", out_dir.resolve())
 
