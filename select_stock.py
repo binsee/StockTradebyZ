@@ -105,11 +105,17 @@ def main():
         logger.error("未能加载任何行情数据")
         sys.exit(1)
 
-    trade_date = (
-        pd.to_datetime(args.date)
-        if args.date
-        else max(df["date"].max() for df in data.values())
-    )
+    # 统一所有 DataFrame 的 date 列类型
+    for df in data.values():
+        df['date'] = pd.to_datetime(df['date'], errors="coerce")
+    #提示数据异常
+        if df['date'].isna().any():
+             logger.warning("代码 %s 的 date 列存在异常，将被忽略", code)
+    # 判断 args.date 是否有值
+    if args.date:
+        trade_date = pd.to_datetime(args.date)
+    else:
+        trade_date = max(df["date"].max() for df in data.values())
     if not args.date:
         logger.info("未指定 --date，使用最近日期 %s", trade_date.date())
 
@@ -137,4 +143,31 @@ def main():
 
 
 if __name__ == "__main__":
+    main()### 
+
+    # --- 加载 Selector 配置 ---
+    selector_cfgs = load_config(Path(args.config))
+
+    # --- 逐个 Selector 运行 ---
+    for cfg in selector_cfgs:
+        if cfg.get("activate", True) is False:
+            continue
+        try:
+            alias, selector = instantiate_selector(cfg)
+        except Exception as e:
+            logger.error("跳过配置 %s：%s", cfg, e)
+            continue
+
+        picks = selector.select(trade_date, data)
+
+        # 将结果写入日志，同时输出到控制台
+        logger.info("")
+        logger.info("============== 选股结果 [%s] ==============", alias)
+        logger.info("交易日: %s", trade_date.date())
+        logger.info("符合条件股票数: %d", len(picks))
+        logger.info("%s", ", ".join(picks) if picks else "无符合条件股票")
+
+
+if __name__ == "__main__":
     main()
+
